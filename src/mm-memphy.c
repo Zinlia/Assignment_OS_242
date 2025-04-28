@@ -8,7 +8,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
+static pthread_mutex_t memphy_mutex = PTHREAD_MUTEX_INITIALIZER;
 /*
  *  MEMPHY_mv_csr - move MEMPHY cursor
  *  @mp: memphy struct
@@ -140,20 +142,29 @@ int MEMPHY_format(struct memphy_struct *mp, int pagesz)
    return 0;
 }
 
+/*Cấp phát 1 frame vật lý từ danh sách free_fp_listlist*/
 int MEMPHY_get_freefp(struct memphy_struct *mp, int *retfpn)
 {
+   // Trien khai mutexmutex
+   pthread_mutex_lock(&memphy_mutex); 
    struct framephy_struct *fp = mp->free_fp_list;
 
+   // Không còn frameframe
    if (fp == NULL)
+   {
+      pthread_mutex_unlock(&memphy_mutex); 
       return -1;
-
+   } 
+    
+   // Gán số hiệu và gỡ node 
    *retfpn = fp->fpn;
    mp->free_fp_list = fp->fp_next;
 
    /* MEMPHY is iteratively used up until its exhausted
     * No garbage collector acting then it not been released
     */
-   free(fp);
+   free(fp); // Giải phóng node 
+   pthread_mutex_unlock(&memphy_mutex);
 
    return 0;
 }
@@ -176,6 +187,8 @@ int MEMPHY_dump(struct memphy_struct *mp)
 
 int MEMPHY_put_freefp(struct memphy_struct *mp, int fpn)
 {
+   
+   pthread_mutex_lock(&memphy_mutex);
    struct framephy_struct *fp = mp->free_fp_list;
    struct framephy_struct *newnode = malloc(sizeof(struct framephy_struct));
 
@@ -184,6 +197,8 @@ int MEMPHY_put_freefp(struct memphy_struct *mp, int fpn)
    newnode->fp_next = fp;
    mp->free_fp_list = newnode;
 
+   
+   pthread_mutex_unlock(&memphy_mutex);
    return 0;
 }
 

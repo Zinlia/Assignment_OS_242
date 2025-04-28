@@ -30,7 +30,7 @@
      data = 0;
      while(data != -1){
          libread(caller, memrg, i, &data);
-         proc_name[i]= data;
+         proc_name[i]= (char)data;
          if(data == -1) proc_name[i]='\0';
          i++;
      }

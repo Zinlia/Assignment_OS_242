@@ -103,18 +103,68 @@ addr_t alloc_mem(uint32_t size, struct pcb_t * proc) {
 	 * to know whether this page has been used by a process.
 	 * For virtual memory space, check bp (break pointer).
 	 * */
-	
-	if (mem_avail) {
+	/* Check if enough memory is available */
+    uint32_t free_pages = 0;
+    for (int i = 0; i < NUM_PAGES; i++) {
+        if (_mem_stat[i].proc == 0) {
+            free_pages++;
+        }
+    }
+    if (free_pages >= num_pages && proc->bp + num_pages * PAGE_SIZE <= (1 << ADDRESS_SIZE)) {
+        mem_avail = 1;
+    }
+
+    if (mem_avail) {
+        /* Allocate memory */
+        ret_mem = proc->bp;
+        proc->bp += num_pages * PAGE_SIZE;
+
+        int last_page = -1;
+        for (int i = 0, allocated = 0; i < NUM_PAGES && allocated < num_pages; i++) {
+            if (_mem_stat[i].proc == 0) {
+                _mem_stat[i].proc = proc->pid;
+                _mem_stat[i].index = allocated;
+                _mem_stat[i].next = -1;
+
+                if (last_page != -1) {
+                    _mem_stat[last_page].next = i;
+                }
+                last_page = i;
+
+                /* Update page table */
+                addr_t first_lv = get_first_lv(ret_mem + allocated * PAGE_SIZE);
+                addr_t second_lv = get_second_lv(ret_mem + allocated * PAGE_SIZE);
+
+                struct trans_table_t *trans_table = get_trans_table(first_lv, proc->page_table);
+                if (trans_table == NULL) {
+                    /* Create a new second-level page table */
+                    proc->page_table->table[proc->page_table->size].v_index = first_lv;
+                    proc->page_table->table[proc->page_table->size].next_lv = malloc(sizeof(struct trans_table_t));
+                    proc->page_table->table[proc->page_table->size].next_lv->size = 0;
+                    trans_table = proc->page_table->table[proc->page_table->size].next_lv;
+                    proc->page_table->size++;
+                }
+
+                /* Add entry to the second-level page table */
+                trans_table->table[trans_table->size].v_index = second_lv;
+                trans_table->table[trans_table->size].p_index = i;
+                trans_table->size++;
+
+                allocated++;
+            }
+        }
+    }
+	// if (mem_avail) {
 		/* We could allocate new memory region to the process */
-		ret_mem = proc->bp;
-		proc->bp += num_pages * PAGE_SIZE;
+		// ret_mem = proc->bp;
+		// proc->bp += num_pages * PAGE_SIZE;
 		/* Update status of physical pages which will be allocated
 		 * to [proc] in _mem_stat. Tasks to do:
 		 * 	- Update [proc], [index], and [next] field
 		 * 	- Add entries to segment table page tables of [proc]
 		 * 	  to ensure accesses to allocated memory slot is
 		 * 	  valid. */
-	}
+	// }
 	pthread_mutex_unlock(&mem_lock);
 	return ret_mem;
 }
