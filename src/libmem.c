@@ -86,25 +86,23 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, int size, int *alloc_addr
   }
   struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
 
-  // Không tìm thấy vùng trống
-  int inc_sz = PAGING_PAGE_ALIGNSZ(size);
-  int old_sbrk = cur_vma->sbrk;
-  int inc_limit_ret;
-
   if (!cur_vma)
   {
     pthread_mutex_unlock(&mmvm_lock);
     return -1;
   }
+  // Không tìm thấy vùng trống
+  int inc_sz = PAGING_PAGE_ALIGNSZ(size);
+  int old_sbrk = cur_vma->sbrk;
 
   // SYSCALL
   struct sc_regs regs;
   regs.a1 = SYSMEM_INC_OP; // mở rộng giới hạn vùng nhớ
   regs.a2 = vmaid;         // tăng bnh
   regs.a3 = inc_sz;        // vùng nhớ ảo nào
-  inc_limit_ret = syscall(caller, 17, &regs);
+  regs.orig_ax = 17;
 
-  if (inc_limit_ret != 0)
+  if (syscall(caller, regs.orig_ax, &regs) != 0)
   {
     regs.flags = -1;
     printf("Memory limit increase failed.\n");
@@ -144,16 +142,16 @@ int __free(struct pcb_t *caller, int vmaid, int rgid)
     return -1;
   }
 
-  struct vm_rg_struct *rgnode = get_symrg_byid(caller->mm, rgid);
-  // Check for invalid or already empty region
-  if (rgnode == NULL || (rgnode->rg_start == 0 && rgnode->rg_end == 0))
-  {
-    printf("Invalid or already empty region");
-    return -1;
-  }
+  struct vm_rg_struct rgnode = *get_symrg_byid(caller->mm, rgid);
+  // // Check for invalid or already empty region
+  // if (rgnode == NULL || (rgnode->rg_start == 0 && rgnode->rg_end == 0))
+  // {
+  //   printf("Invalid or already empty region");
+  //   return -1;
+  // }
   /*enlist the obsoleted memory region */
-  enlist_vm_freerg_list(caller->mm, rgnode);
-  /* Invalidate the symbol table entry after freeing */
+  enlist_vm_freerg_list(caller->mm, &rgnode);
+  // /* Invalidate the symbol table entry after freeing */
   // caller->mm->symrgtbl[rgid].rg_start = 0;
   // caller->mm->symrgtbl[rgid].rg_end = 0;
 
@@ -245,10 +243,10 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
 
     /* Update page table */
     uint32_t swptyp = caller->active_mswp_id;
-    pte_set_swap(&vicpte , swptyp , swpfpn); // Victim swapped
+    pte_set_swap(&vicpte, swptyp, swpfpn); // Victim swapped
     mm->pgd[vicpgn] = vicpte;
 
-    pte_set_fpn(&pte , vicfpn); // Update page
+    pte_set_fpn(&pte, vicfpn); // Update page
     PAGING_PTE_SET_PRESENT(pte);
     mm->pgd[pgn] = pte;
     enlist_pgn_node(&caller->mm->fifo_pgn, pgn);
@@ -275,7 +273,7 @@ int pg_getval(struct mm_struct *mm, int addr, BYTE *data, struct pcb_t *caller)
   if (pg_getpage(mm, pgn, &fpn, caller) != 0)
     return -1;
 
-  int phyaddr = PAGING_PHYADDR(fpn, off);
+  int phyaddr = (fpn << PAGING_ADDR_FPN_LOBIT) + off;
 
   // SYSCALL
   struct sc_regs regs;
@@ -323,7 +321,7 @@ int pg_setval(struct mm_struct *mm, int addr, BYTE value, struct pcb_t *caller)
     return -1;
   }
 
-  regs.flags =0;
+  regs.flags = 0;
   return 0;
 }
 
@@ -365,7 +363,7 @@ int libread(
 #ifdef PAGETBL_DUMP
   print_pgtbl(proc, 0, -1); // print max TBL
 #endif
-  MEMPHY_dump(proc->mram);
+  // MEMPHY_dump(proc->mram); 
 #endif
 
   return val;
@@ -404,7 +402,7 @@ int libwrite(
 #ifdef PAGETBL_DUMP
   print_pgtbl(proc, 0, -1); // print max TBL
 #endif
-  MEMPHY_dump(proc->mram);
+  // MEMPHY_dump(proc->mram);
 #endif
 
   return __write(proc, 0, destination, offset, data);

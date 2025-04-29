@@ -13,74 +13,69 @@
  #include "stdio.h"
  #include "libmem.h"
  #include "queue.h"
- #include "string.h"
- #include "stdlib.h"
- 
+ #include <string.h>
+
  int __sys_killall(struct pcb_t *caller, struct sc_regs* regs)
  {
      char proc_name[100];
      uint32_t data;
- 
-     //hardcode for demo only
      uint32_t memrg = regs->a1;
      
-     /* TODO: Get name of the target proc */
-     //proc_name = libread..
+     //Get name of the target proc
      int i = 0;
      data = 0;
      while(data != -1){
          libread(caller, memrg, i, &data);
-         proc_name[i]= (char)data;
+         proc_name[i]= data;
          if(data == -1) proc_name[i]='\0';
          i++;
      }
      printf("The procname retrieved from memregionid %d is \"%s\"\n", memrg, proc_name);
  
-     // Traverse running_list
+     // Traverse running_list 
      struct queue_t *running_list = caller->running_list;
-     for (int i = 0; i < running_list->size;) {
-         if (strcmp(running_list->proc[i]->path, proc_name) == 0) {
- #ifdef MMDBG
-             printf("[killall] Killing running proc \"%s\" (pid=%d)\n", running_list->proc[i]->path, running_list->proc[i]->pid);
- #endif
-             // Free memory of the killed process
-             free(running_list->proc[i]);
-             
-             // Shift left: move remaining processes to the left in the array
-             for (int j = i; j < running_list->size - 1; j++) {
-                 running_list->proc[j] = running_list->proc[j + 1];
-             }
-             running_list->size--;  // Decrease the size of the running list
-             // Don't increment i, stay at current index since we shifted
-         } else {
-             i++;  // Move to the next process
-         }
+     if (!empty(running_list)) {
+        struct queue_t temp_running_list = {.size = 0};
+        while (!empty(running_list)) {
+            struct pcb_t* proc = dequeue(running_list);
+            char *pname = strrchr(proc->path, '/');
+            pname = (pname != NULL) ? (pname + 1) : proc->path;
+
+            if (strcmp(pname, proc_name) != 0) {
+                enqueue(&temp_running_list, proc);
+            }
+            else {
+                libfree(proc, memrg);
+            }
+        }
+        *running_list = temp_running_list;
      }
+
  
- #ifdef MLQ_SCHED
+#ifdef MLQ_SCHED
      // Traverse mlq_ready_queue
      for (int prio = 0; prio < MAX_PRIO; prio++) {
-         struct queue_t *q = &caller->mlq_ready_queue[prio];
-         for (int i = 0; i < q->size;) {
-             if (strcmp(q->proc[i]->path, proc_name) == 0) {
- #ifdef MMDBG
-                 printf("[killall] Killing ready proc \"%s\" (pid=%d) at prio %d\n", q->proc[i]->path, q->proc[i]->pid, prio);
- #endif                
-                 // Free memory of the killed process
-                 free(q->proc[i]);
-                 
-                 // Shift left: move remaining processes to the left in the array
-                 for (int j = i; j < q->size - 1; j++) {
-                     q->proc[j] = q->proc[j + 1];
-                 }
-                 q->size--;  // Decrease the size of the queue
-             } else {
-                 i++;  // Move to the next process
-             }
-         }
-     }  
- #endif
- 
-     return 0; 
+        struct queue_t *q = &caller->mlq_ready_queue[prio];
+
+        if (!empty(q)){
+            struct queue_t temp_q = {.size = 0};
+            while (!empty(q)) {
+                struct pcb_t* proc = dequeue(q);
+                char *pname = strrchr(proc->path, '/');
+                pname = (pname != NULL) ? (pname + 1) : proc->path;
+
+                if (strcmp(pname, proc_name) != 0) {
+                    enqueue(&temp_q, proc);
+                }
+                else {
+                    libfree(proc, memrg);
+                }
+            }
+            *q = temp_q;
+        }
+    }
+#endif
+
+    return 0;
  }
  

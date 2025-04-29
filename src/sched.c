@@ -11,7 +11,7 @@ static pthread_mutex_t queue_lock;
 static struct queue_t running_list;
 #ifdef MLQ_SCHED
 static struct queue_t mlq_ready_queue[MAX_PRIO];
-static int slot[MAX_PRIO];
+static int slot[MAX_PRIO]; 
 #endif
 
 int queue_empty(void)
