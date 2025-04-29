@@ -145,25 +145,25 @@ int MEMPHY_format(struct memphy_struct *mp, int pagesz)
 /*Cấp phát 1 frame vật lý từ danh sách free_fp_listlist*/
 int MEMPHY_get_freefp(struct memphy_struct *mp, int *retfpn)
 {
-   // Trien khai mutexmutex
-   pthread_mutex_lock(&memphy_mutex); 
+   // Trien khai mutex
+   pthread_mutex_lock(&memphy_mutex);
    struct framephy_struct *fp = mp->free_fp_list;
 
-   // Không còn frameframe
+   // Không còn frame 
    if (fp == NULL)
    {
-      pthread_mutex_unlock(&memphy_mutex); 
+      pthread_mutex_unlock(&memphy_mutex);
       return -1;
-   } 
-    
-   // Gán số hiệu và gỡ node 
+   }
+
+   // Gán số hiệu và gỡ node
    *retfpn = fp->fpn;
    mp->free_fp_list = fp->fp_next;
 
    /* MEMPHY is iteratively used up until its exhausted
     * No garbage collector acting then it not been released
     */
-   free(fp); // Giải phóng node 
+   free(fp); // Giải phóng node
    pthread_mutex_unlock(&memphy_mutex);
 
    return 0;
@@ -171,23 +171,26 @@ int MEMPHY_get_freefp(struct memphy_struct *mp, int *retfpn)
 
 int MEMPHY_dump(struct memphy_struct *mp)
 {
-  /*TODO dump memphy contnt mp->storage
-   *     for tracing the memory content
-   */
-   if(mp==NULL||mp->storage==NULL) return -1;
-   printf("MEMPHY_dump: size = %d bytes\n",mp->maxsz);
-   for(int i=0;i<mp->maxsz;i++){
-       printf("%02X ",mp->storage[i]);
-       if((i+1)%16==0) printf("\n");
+   /*TODO dump memphy contnt mp->storage
+    *     for tracing the memory content
+    */
+   if (mp == NULL || mp->storage == NULL)
+      return -1;
+
+   printf("===== PHYSICAL MEMORY DUMP =====\n");
+   /* Duyệt qua toàn bộ bộ nhớ vật lý */
+   for (int cur_addr = 0; cur_addr < mp->maxsz; cur_addr++)
+   {
+      printf("BYTE %08x: %d\n", cur_addr, mp->storage[cur_addr]);
    }
-   printf("\n");
-   
+   printf("===== PHYSICAL MEMORY END-DUMP =====\n");
+
    return 0;
 }
 
 int MEMPHY_put_freefp(struct memphy_struct *mp, int fpn)
 {
-   
+
    pthread_mutex_lock(&memphy_mutex);
    struct framephy_struct *fp = mp->free_fp_list;
    struct framephy_struct *newnode = malloc(sizeof(struct framephy_struct));
@@ -197,7 +200,6 @@ int MEMPHY_put_freefp(struct memphy_struct *mp, int fpn)
    newnode->fp_next = fp;
    mp->free_fp_list = newnode;
 
-   
    pthread_mutex_unlock(&memphy_mutex);
    return 0;
 }

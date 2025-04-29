@@ -68,62 +68,61 @@ struct vm_rg_struct *get_symrg_byid(struct mm_struct *mm, int rgid)
  */
 int __alloc(struct pcb_t *caller, int vmaid, int rgid, int size, int *alloc_addr)
 {
-
-  struct vm_rg_struct rgnode;
   pthread_mutex_lock(&mmvm_lock);
 
-  // Tìm kiếm vùng trống có sẵn trong vm
+  struct vm_rg_struct rgnode;
+
+  // Find free memory region
   if (get_free_vmrg_area(caller, vmaid, size, &rgnode) == 0)
   {
-    // cập nhật bảng ký hiệu tiến trình
     caller->mm->symrgtbl[rgid].rg_start = rgnode.rg_start;
     caller->mm->symrgtbl[rgid].rg_end = rgnode.rg_end;
 
-    *alloc_addr = rgnode.rg_start; // gán địa chỉ bắt đầu
+    *alloc_addr = rgnode.rg_start;
 
     pthread_mutex_unlock(&mmvm_lock);
     return 0;
   }
-  struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
 
+  // Not having free memory region yet
+  int inc_sz = PAGING_PAGE_ALIGNSZ(size);
+  int inc_limit_ret;
+
+  struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
   if (!cur_vma)
   {
     pthread_mutex_unlock(&mmvm_lock);
     return -1;
   }
-  // Không tìm thấy vùng trống
-  int inc_sz = PAGING_PAGE_ALIGNSZ(size);
-  int old_sbrk = cur_vma->sbrk;
 
+  pthread_mutex_unlock(&mmvm_lock);
   // SYSCALL
-  struct sc_regs regs;
-  regs.a1 = SYSMEM_INC_OP; // mở rộng giới hạn vùng nhớ
-  regs.a2 = vmaid;         // tăng bnh
-  regs.a3 = inc_sz;        // vùng nhớ ảo nào
-  regs.orig_ax = 17;
+  struct sc_regs regs = {0};
+  regs.a1 = SYSMEM_INC_OP; // operation: increase
+  regs.a2 = vmaid;         // which VMA to expand
+  regs.a3 = inc_sz;        // how much to increase
+  inc_limit_ret = syscall(caller, 17, &regs);
 
-  if (syscall(caller, regs.orig_ax, &regs) != 0)
+  if (inc_limit_ret < 0)
   {
-    regs.flags = -1;
     printf("Memory limit increase failed.\n");
-    pthread_mutex_unlock(&mmvm_lock);
+    // pthread_mutex_unlock(&mmvm_lock);
     return -1; // Return failure if limit increase fails
   }
 
-  regs.flags = 0; // succesfull
+  pthread_mutex_lock(&mmvm_lock);
+  /* After increasing the limit, retry allocation */
+  caller->mm->symrgtbl[rgid].rg_start = rgnode.rg_start;
+  caller->mm->symrgtbl[rgid].rg_end = rgnode.rg_end;
 
-  // /* After increasing the limit, retry allocation */
-  // if (get_free_vmrg_area(caller, vmaid, size, &rgnode) == 0)
-  // {
-  caller->mm->symrgtbl[rgid].rg_start = old_sbrk;
-  caller->mm->symrgtbl[rgid].rg_end = old_sbrk + inc_sz;
+  *alloc_addr = rgnode.rg_start;
+#ifdef MMDBG
+  printf("===== PHYSICAL MEMORY AFTER ALLOCATION =====\n");
+  printf("PID=%d - Region=%d - Address=%08lx - Size=%d byte\n", caller->pid, rgid, rgnode.rg_start, size);
+  print_pgtbl(caller, 0, -1); // In bảng trang
+  printf("================================================================\n");
+#endif
 
-  *alloc_addr = old_sbrk;
-
-  //   pthread_mutex_unlock(&mmvm_lock);
-  //   return 0;
-  // }
-  /* If allocation still fails, return error */
   pthread_mutex_unlock(&mmvm_lock);
   return 0;
 }
@@ -137,24 +136,32 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, int size, int *alloc_addr
  */
 int __free(struct pcb_t *caller, int vmaid, int rgid)
 {
+  pthread_mutex_lock(&mmvm_lock);
   if (rgid < 0 || rgid > PAGING_MAX_SYMTBL_SZ)
   {
     return -1;
   }
 
-  struct vm_rg_struct rgnode = *get_symrg_byid(caller->mm, rgid);
+  struct vm_rg_struct *rgnode = get_symrg_byid(caller->mm, rgid);
   // // Check for invalid or already empty region
-  // if (rgnode == NULL || (rgnode->rg_start == 0 && rgnode->rg_end == 0))
-  // {
-  //   printf("Invalid or already empty region");
-  //   return -1;
-  // }
+  if (rgnode == NULL || (rgnode->rg_start == 0 && rgnode->rg_end == 0))
+  {
+    printf("Invalid or already empty region");
+    return -1;
+  }
   /*enlist the obsoleted memory region */
-  enlist_vm_freerg_list(caller->mm, &rgnode);
+  enlist_vm_freerg_list(caller->mm, rgnode);
   // /* Invalidate the symbol table entry after freeing */
-  // caller->mm->symrgtbl[rgid].rg_start = 0;
-  // caller->mm->symrgtbl[rgid].rg_end = 0;
+  caller->mm->symrgtbl[rgid].rg_start = 0;
+  caller->mm->symrgtbl[rgid].rg_end = 0;
 
+#ifdef MMDBG
+  printf("===== PHYSICAL MEMORY AFTER DEALLOCATION =====\n");
+  printf("PID=%d - Region=%d\n", caller->pid, rgid);
+  print_pgtbl(caller, 0, -1); // In bảng trang
+  printf("================================================================\n");
+#endif
+  pthread_mutex_unlock(&mmvm_lock);
   return 0;
 }
 
@@ -197,21 +204,17 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
 {
   uint32_t pte = mm->pgd[pgn];
 
-  // Kiểm tra 1 page có đang ở RAM khôngkhông
+  // Kiểm tra 1 page có đang ở RAM không
   if (!PAGING_PAGE_PRESENT(pte))
   {
     int vicpgn, swpfpn, vicfpn;
     int tgtfpn = PAGING_SWP(pte); // frame chứa dữ liệu của page cần gọi
 
     // Tìm victim page từ danh sách FIFO
-    if (find_victim_page(mm, &vicpgn) == -1)
-      return -1;
+    find_victim_page(mm, &vicpgn);
 
-    /* Tìm frame trống trong bộ nhớnhớ */
-    if (MEMPHY_get_freefp(caller->active_mswp, &swpfpn) == 0)
-    {
-      return -1;
-    }
+    /* Tìm frame trống trong bộ nhớ  */
+    MEMPHY_get_freefp(caller->active_mswp, &swpfpn);
     uint32_t vicpte = mm->pgd[vicpgn];
     vicfpn = PAGING_PTE_FPN(vicpte); // lấy số frame từ pte
 
@@ -270,6 +273,7 @@ int pg_getval(struct mm_struct *mm, int addr, BYTE *data, struct pcb_t *caller)
   int fpn;
 
   // Check if page loaded to RAM
+
   if (pg_getpage(mm, pgn, &fpn, caller) != 0)
     return -1;
 
@@ -288,7 +292,12 @@ int pg_getval(struct mm_struct *mm, int addr, BYTE *data, struct pcb_t *caller)
   // Update data
   *data = (BYTE)(regs.a3); // The value read from memory will be stored in regs.a3
   regs.flags = 0;
-
+#ifdef MMDBG
+  printf("===== PHYSICAL MEMORY AFTER READING =====\n");
+  printf("read region=%d offset=%d value=%d\n", 1, off, *data);
+  print_pgtbl(caller, 0, -1); // In bảng trang
+  printf("================================================================\n");
+#endif
   return 0;
 }
 
@@ -306,7 +315,9 @@ int pg_setval(struct mm_struct *mm, int addr, BYTE value, struct pcb_t *caller)
 
   /* Get the page to MEMRAM, swap from MEMSWAP if needed */
   if (pg_getpage(mm, pgn, &fpn, caller) != 0)
+  {
     return -1; /* invalid page access */
+  }
 
   int phyaddr = (fpn << PAGING_ADDR_FPN_LOBIT) + off;
 
@@ -317,10 +328,10 @@ int pg_setval(struct mm_struct *mm, int addr, BYTE value, struct pcb_t *caller)
   regs.a3 = value;           // Value to be written to memory
   if (syscall(caller, 17, &regs) != 0)
   {
+
     regs.flags = -1;
     return -1;
   }
-
   regs.flags = 0;
   return 0;
 }
@@ -359,11 +370,14 @@ int libread(
   /* TODO update result of reading action*/
   // destination
 #ifdef IODUMP
+  printf("===== PHYSICAL MEMORY AFTER READING =====\n");
   printf("read region=%d offset=%d value=%d\n", source, offset, data);
+  printf("================================================================\n");
 #ifdef PAGETBL_DUMP
   print_pgtbl(proc, 0, -1); // print max TBL
+
 #endif
-  // MEMPHY_dump(proc->mram); 
+  MEMPHY_dump(proc->mram);
 #endif
 
   return val;
@@ -398,9 +412,11 @@ int libwrite(
     uint32_t offset)
 {
 #ifdef IODUMP
+  printf("===== PHYSICAL MEMORY AFTER WRITING =====\n");
   printf("write region=%d offset=%d value=%d\n", destination, offset, data);
 #ifdef PAGETBL_DUMP
   print_pgtbl(proc, 0, -1); // print max TBL
+  printf("================================================================\n");
 #endif
   // MEMPHY_dump(proc->mram);
 #endif
@@ -488,42 +504,48 @@ int get_free_vmrg_area(struct pcb_t *caller, int vmaid, int size, struct vm_rg_s
     return -1;
 
   struct vm_rg_struct *prev = NULL;
-  struct vm_rg_struct *rgit = cur_vma->vm_freerg_list;
+  struct vm_rg_struct *curr = cur_vma->vm_freerg_list;
 
-  if (rgit == NULL)
-    return -1;
-
-  /* TODO Traverse on list of free vm region to find a fit space */
-  while (rgit != NULL)
+  while (curr != NULL)
   {
-    unsigned long region_sz = rgit->rg_end - rgit->rg_start + 1;
-    if (region_sz >= size)
+    // Kiểm tra nếu vùng hiện tại không hợp lệ
+    if (curr->rg_start > curr->rg_end)
     {
-      newrg->rg_start = rgit->rg_start;
-      newrg->rg_end = rgit->rg_start + size - 1;
-      if (region_sz > size)
+      prev = curr;
+      curr = curr->rg_next;
+      continue; // bỏ qua vùng này
+    }
+
+    unsigned long freesize = curr->rg_end - curr->rg_start + 1;
+    if (freesize >= size)
+    {
+      newrg->rg_start = curr->rg_start;
+      newrg->rg_end = curr->rg_start + size - 1;
+
+      if (freesize > size)
       {
-        rgit->rg_start += size;
+        curr->rg_start += size;
       }
       else
       {
         if (prev == NULL)
         {
-          cur_vma->vm_freerg_list = rgit->rg_next;
+          cur_vma->vm_freerg_list = curr->rg_next;
         }
         else
         {
-          prev->rg_next = rgit->rg_next;
+          prev->rg_next = curr->rg_next;
         }
-        free(rgit);
+        // free(curr);
       }
       return 0;
     }
-    prev = rgit;
-    rgit = rgit->rg_next;
+
+    prev = curr;
+    curr = curr->rg_next;
   }
 
-  return -1; // no region large enough
+  return -1;
 }
 
 // #endif
