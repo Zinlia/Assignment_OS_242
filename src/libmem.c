@@ -377,7 +377,7 @@ int libread(
   print_pgtbl(proc, 0, -1); // print max TBL
 
 #endif
-  MEMPHY_dump(proc->mram);
+  // MEMPHY_dump(proc->mram);
 #endif
 
   return val;
